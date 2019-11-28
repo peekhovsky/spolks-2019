@@ -3,7 +3,7 @@
 
     <Appenders>
         <Console name="Console" target="SYSTEM_OUT">
-            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-15t %highlight{%-5level}{FATAL=bg_red,
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} %-8t %highlight{%-5level}{FATAL=bg_red,
             ERROR=red, WARN=yellow, INFO=green, DEBUG=blue} %logger{36} - %msg%n" disableAnsi="false"/>
         </Console>
     </Appenders>
