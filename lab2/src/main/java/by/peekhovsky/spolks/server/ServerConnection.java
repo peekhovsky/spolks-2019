@@ -1,6 +1,6 @@
 package by.peekhovsky.spolks.server;
 
-import by.peekhovsky.spolks.BaseTcpConnection;
+import by.peekhovsky.spolks.BaseUdpConnection;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 
@@ -8,8 +8,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.Socket;
-import java.net.SocketException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Arrays;
@@ -20,22 +22,10 @@ import java.util.List;
  */
 @Slf4j
 @SuppressWarnings("WeakerAccess")
-public class ServerConnection extends BaseTcpConnection {
+public class ServerConnection extends BaseUdpConnection {
 
-  public ServerConnection(Socket socket) throws IOException {
-    super(socket, LocalTime.of(0, 0, 20).toNanoOfDay(), 1024);
-  }
-
-  public void changeSocket(Socket newSocket) throws IOException {
-    this.socket = newSocket;
-    if (this.in != null) {
-      in.close();
-    }
-    if (this.out != null) {
-      out.close();
-    }
-    this.in = newSocket.getInputStream();
-    this.out = newSocket.getOutputStream();
+  public ServerConnection(DatagramSocket socket, InetAddress inetAddress, int port) throws IOException {
+    super(socket, 5000, 1024, inetAddress, port);
   }
 
   public void executeSession() throws IOException {
@@ -49,6 +39,7 @@ public class ServerConnection extends BaseTcpConnection {
     }
   }
 
+  @Override
   public void execute(String cmdWithParams) {
     String[] words = cmdWithParams.split(" ");
 
@@ -85,37 +76,24 @@ public class ServerConnection extends BaseTcpConnection {
     }
   }
 
-  private void upload(List<String> params) {
+  @Override
+  public void upload(List<String> params) {
     if (params.size() < 2) {
       throw new IllegalArgumentException("Filename and size params is required.");
     }
     var filename = params.get(0);
     log.info("file size: {}", params.get(1));
-    var fileSize = Long.parseLong(params.get(1));
+    var fileSize = Integer.parseInt(params.get(1));
     receiveFile(filename, fileSize);
   }
 
-  private void download(List<String> params) {
-    if (params.isEmpty()) {
-      throw new IllegalArgumentException("Filename param is required.");
-    }
-    var filePath = params.get(0);
-    log.info("File path: {}", filePath);
-    var file = new File(filePath);
-    if (!file.exists()) {
-      log.warn("File does not exist.");
-      try {
-        sendString("File does not exist.");
-      } catch (IOException e) {
-        e.printStackTrace();
-        isExit = true;
-      }
-      return;
-    }
-    sendFile(file);
+  @Override
+  public void download(List<String> params) {
+    throw new UnsupportedOperationException();
   }
 
-  private void time(List<String> params) {
+  @Override
+  public void time(List<String> params) {
     try {
       sendString(LocalDateTime.now().toString());
     } catch (IOException e) {
@@ -124,6 +102,12 @@ public class ServerConnection extends BaseTcpConnection {
     }
   }
 
+  @Override
+  public void exit(List<String> params) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public void echo(List<String> params) {
     var strToSend = StringUtils.join(params, " ");
     try {
@@ -134,50 +118,12 @@ public class ServerConnection extends BaseTcpConnection {
     }
   }
 
+  @Override
   public void sendFile(File file) {
-    log.info("Sending file...");
-    try {
-      sendString("");
-      sendString(Long.toString(file.length()));
-      var offsetStr = receiveString();
-
-      if (offsetStr.isEmpty()) {
-        return;
-      }
-
-      var offset = Long.parseLong(offsetStr);
-      log.info("[FILE] offset: {}", offset);
-
-      try (var fileInputStream = new FileInputStream(file)) {
-        log.info("[FILE] Start to send bytes...");
-        byte[] buffer = new byte[bufferSize];
-
-        var skippedNumOfBytes = fileInputStream.skip(offset);
-        if (skippedNumOfBytes != offset) {
-          log.warn("[FILE] skippedNumOfBytes != offset");
-        }
-
-        int readBytesFromFile = 0;
-        while ((readBytesFromFile = fileInputStream.read(buffer, 0, bufferSize)) != -1) {
-          //Thread.sleep(200);
-          out.write(buffer, 0, readBytesFromFile);
-          System.out.print(".");
-        }
-
-        System.out.print("\n");
-        log.info("[FILE] End to send bytes.");
-
-      } catch (IOException e) {
-        log.warn(e.getMessage());
-        isExit = true;
-      }
-
-    } catch (Exception e) {
-      e.printStackTrace();
-      isExit = true;
-    }
+    throw new UnsupportedOperationException();
   }
 
+  @Override
   public void receiveFile(String filename, long fileSize) {
     long offset = 0;
     var file = new File("new_" + filename);
@@ -194,7 +140,11 @@ public class ServerConnection extends BaseTcpConnection {
         log.info("[FILE] offset: {}", offset);
       }
 
-      out.write((offset + "\n").getBytes());
+      var ok = sendWithReceive(Long.toString(offset), 3);
+      if (!"ok".equals(ok)) {
+        isExit = true;
+        return;
+      }
 
       try (var fileOutputStream = new FileOutputStream(file, true)) {
         byte[] buffer = new byte[bufferSize];
@@ -206,29 +156,25 @@ public class ServerConnection extends BaseTcpConnection {
         var startTime = System.nanoTime();
         var iterOut = 10;
 
-        while ((receivedBytes = in.read(buffer, 0, bufferSize)) != -1) {
-          var endTime = System.nanoTime();
-
-          if (receivedBytes == 0) {
-            iterOut--;
-          } else  {
-            iterOut = 10;
-          }
-          if (iterOut <= 0) {
+        while (true) {
+          DatagramPacket packet = new DatagramPacket(buffer, bufferSize);
+          try {
+            socket.receive(packet);
+          } catch (SocketTimeoutException e) {
+            log.warn("[FILE] Timeout exception");
             break;
           }
 
-          totalReceivedBytes += receivedBytes;
+          receivedBytes = packet.getLength();
+          totalReceivedBytes += packet.getLength();
           offset += receivedBytes;
           fileOutputStream.write(buffer, 0, receivedBytes);
           if (offset >= fileSize) {
+            var endTime = System.nanoTime();
             log.info("Final bitrate {} Mbit/s", String.format("%.8f", calcBitrate(totalReceivedBytes, (endTime - startTime)) / 1000000.0));
             log.info("Bytes received: {}", totalReceivedBytes);
             break;
           }
-
-          // log.info("Bitrate {} Mbit/s", String.format("%.8f", calcBitrate(receivedBytes, (endTime - oneIterStartTime)) / 1000000.0));
-          // oneIterStartTime = System.nanoTime();
         }
 
         if (offset < fileSize) {

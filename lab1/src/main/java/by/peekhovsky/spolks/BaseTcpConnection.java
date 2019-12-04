@@ -74,6 +74,9 @@ public class BaseTcpConnection {
       log.error("Connection thread has been interrupted");
       isExit = true;
       return "";
+    } catch (IOException e) {
+      isExit = true;
+      return "";
     }
   }
 
